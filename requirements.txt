@@ -3,6 +3,6 @@ langchain
 langchain-core
 langchain-google-genai
 langchain-community
-chromadb
+chromadb==0.4.15
 pypdf
 python-dotenv
