@@ -3,161 +3,153 @@ import tempfile
 import streamlit as st
 from dotenv import load_dotenv
 
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.vectorstores import Chroma
-# --- THIS IS THE CORRECTED IMPORT BLOCK ---
-from langchain.chains.retrieval import create_retrieval_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain.chains.history_aware_retriever import create_history_aware_retriever
-# --- END OF CORRECTED IMPORTS ---
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.messages import AIMessage, HumanMessage
+from operator import itemgetter
 
-
+# --- Load Environment Variables ---
 load_dotenv()
 
+# --- Core Functions ---
 
-def get_document_from_upload(uploaded_files):
-    all_documents = []
+def process_and_store_documents(uploaded_files):
+    """
+    Processes uploaded PDF files, adds metadata, and stores them in a vector store.
+    """
+    all_chunks = []
     for uploaded_file in uploaded_files:
-        tmpfile_path = None
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-                tmp_file.write(uploaded_file.getvalue())
-                tmpfile_path = tmp_file.name
-            loader = PyPDFLoader(tmpfile_path)
-            all_documents.extend(loader.load())
-        finally:
-            if tmpfile_path and os.path.exists(tmpfile_path):
-                os.remove(tmpfile_path)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmpfile:
+            tmpfile.write(uploaded_file.getvalue())
+            tmpfile_path = tmpfile.name
 
-        return all_documents
+        loader = PyPDFLoader(tmpfile_path)
+        pages = loader.load_and_split()
+        
+        # Add metadata to each page
+        for page in pages:
+            page.metadata["source"] = uploaded_file.name
+        
+        # Split documents into smaller chunks
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        chunks = text_splitter.split_documents(pages)
+        all_chunks.extend(chunks)
+        
+        os.remove(tmpfile_path)
 
+    # Create the vector store from all chunks
+    api_key = os.getenv("GOOGLE_API_KEY")
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=api_key) # type: ignore
+    vector_store = Chroma.from_documents(documents=all_chunks, embedding=embeddings)
+    
+    return vector_store
 
-def get_text_chunks(documents):
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000, chunk_overlap=200)
-    return text_splitter.split_documents(documents)
-
-
-def get_vector_store(text_chunks):
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004")
-    return Chroma.from_documents(text_chunks, embeddings)
-
-
-def get_context_retriver_chain(vector_store):
-    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest")
+def get_rag_chain(vector_store):
+    """
+    Builds a RAG (Retrieval-Augmented Generation) chain.
+    """
+    api_key = os.getenv("GOOGLE_API_KEY")
+    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", google_api_key=api_key)
     retriever = vector_store.as_retriever()
-    repharasing_prompt = ChatPromptTemplate.from_messages([
-        ("placeholder", "{chat_history}"),
-        ("user", "{input}"),
-        ("user", "Given the above conversation, generate a search query to look up in order to get information relevant to the conversation")
-    ])
 
-    return create_history_aware_retriever(llm, retriever, repharasing_prompt)
+    # The prompt template for the RAG chain
+    prompt = ChatPromptTemplate.from_template(
+        """You are an expert assistant. Answer the user's question based on the following context.
+Be sure to use the metadata (like 'source' and 'page') when it is relevant to the question.
 
+Context:
+{context}
 
-def get_conversational_rag_chain(vector_store):
-    retriever = vector_store.as_retriever()
-    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest")
-    stuff_document_prompt = ChatPromptTemplate.from_messages([
-        ("system",
-         "Answer the question based on the context provided \n\n {context}"),
-        ("placeholder", "{chat_history}"),
-        ("user", "{input}")
-    ])
+Question:
+{question}
 
-    stuff_document_chain = create_stuff_documents_chain(
-        llm, stuff_document_prompt)
-    return create_retrieval_chain(retriever, stuff_document_chain)
+Answer:"""
+    )
 
+    def format_docs(docs):
+        # Formats the retrieved documents to be passed to the LLM
+        return "\n\n".join(
+            f"Source: {doc.metadata.get('source', 'Unknown')}, Page: {doc.metadata.get('page', 'N/A')}\n"
+            f"Content: {doc.page_content}"
+            for doc in docs
+        )
 
-def get_response(user_input):
-    retriver_chain = get_context_retriver_chain(st.session_state.vector_store)
-    conversational_rag_chain = get_conversational_rag_chain(retriver_chain)
+    # The RAG chain using LangChain Expression Language (LCEL)
+    rag_chain = (
+        {
+            "context": itemgetter("question") | retriever | format_docs,
+            "question": itemgetter("question"),
+        }
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
+    
+    return rag_chain
 
-    response = conversational_rag_chain.invoke({
-        "chat_history": st.session_state.chat_history,
-        "input": user_input
-    })
-
-    return response['answer']
-
+# --- Streamlit Application ---
 
 def main():
-    st.set_page_config(page_title="Chat with your Docs", page_icon="📄")
-    st.title("Chat with Your Documents 📄")
-    st.write("Upload your PDF files, click 'Process', and start asking questions!")
-
-    if "conversation_chain" not in st.session_state:
-        st.session_state.conversation_chain = None
+    st.set_page_config(page_title="Chat with Your Docs", page_icon="📄")
+    st.title("📄 Chat with Your Documents")
+    
+    # Initialize session state variables
+    if "rag_chain" not in st.session_state:
+        st.session_state.rag_chain = None
     if "chat_history" not in st.session_state:
-        st.session_state.chat_history = [
-            AIMessage(
-                content="Hello! Upload some PDFs and I'll help you with them."),
-        ]
+        st.session_state.chat_history = [AIMessage(content="Hello! Upload your PDFs in the sidebar to get started.")]
+    if "processed_files" not in st.session_state:
+        st.session_state.processed_files = []
 
+    # --- Sidebar for File Uploading ---
     with st.sidebar:
         st.subheader("Your Documents")
         uploaded_files = st.file_uploader(
-            "Upload your PDFs here and click 'Process'", accept_multiple_files=True, type="pdf"
+            "Upload PDFs and click 'Process'", accept_multiple_files=True, type="pdf"
         )
-        if st.button("Process"):
-            if uploaded_files:
-                with st.spinner("Processing your documents... This may take a moment."):
-                    # 1. Load documents
-                    raw_docs = get_document_from_upload(uploaded_files)
-
-                    # 2. Split documents into chunks
-                    text_chunks = get_text_chunks(raw_docs)
-
-                    # 3. Create a vector store
-                    vector_store = get_vector_store(text_chunks)
-                    
-                    # 4. **CRITICAL:** Create the chain ONCE and store it in session state
-                    st.session_state.conversation_chain = get_conversational_rag_chain(vector_store)
-                    
-                    st.success("Processing complete! You can now ask questions.")
-            else:
+        if st.button("Process Documents"):
+            if not uploaded_files:
                 st.warning("Please upload at least one PDF file.")
+            else:
+                with st.spinner("Processing..."):
+                    # Process the files and create the RAG chain
+                    vector_store = process_and_store_documents(uploaded_files)
+                    st.session_state.rag_chain = get_rag_chain(vector_store)
+                    
+                    # Store the names of processed files
+                    st.session_state.processed_files = [f.name for f in uploaded_files]
+                    st.success("Documents processed successfully!")
 
-    # --- Main Chat Interface ---
-    # Display previous chat messages from session state
-    for message in st.session_state.chat_history:
-        if isinstance(message, AIMessage):
-            with st.chat_message("assistant"):
-                st.write(message.content)
-        elif isinstance(message, HumanMessage):
-            with st.chat_message("user"):
-                st.write(message.content)
+    # --- Main Chat Area ---
+    if st.session_state.processed_files:
+        st.info(f"Currently chatting with: {', '.join(st.session_state.processed_files)}")
 
-    # Get user input
+    # Display chat history
+    for msg in st.session_state.chat_history:
+        if isinstance(msg, AIMessage):
+            st.chat_message("assistant").write(msg.content)
+        elif isinstance(msg, HumanMessage):
+            st.chat_message("user").write(msg.content)
+
+    # Handle user input
     if user_query := st.chat_input("Ask a question about your documents..."):
-        # Ensure the chain is ready before proceeding
-        if st.session_state.conversation_chain is None:
-            st.warning("Please upload and process your documents first.")
+        if st.session_state.rag_chain is None:
+            st.warning("Please process your documents first.")
         else:
-            # Add user message to history and display it
-            st.session_state.chat_history.append(HumanMessage(content=user_query))  # type: ignore
-            with st.chat_message("user"):
-                st.write(user_query)
-            
-            # Get AI response
-            with st.spinner("Thinking..."):
-                # Use the PRE-BUILT chain from session state
-                response = st.session_state.conversation_chain.invoke({
-                    "input": user_query,
-                    "context": [] # Context will be filled by the retriever
-                })
-                ai_response = response['answer']
+            st.session_state.chat_history.append(HumanMessage(content=user_query)) # type: ignore
+            st.chat_message("user").write(user_query)
 
-                # Add AI response to history and display it
-                st.session_state.chat_history.append(AIMessage(content=ai_response))
-                with st.chat_message("assistant"):
-                    st.write(ai_response)
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    # Invoke the RAG chain with a dictionary input
+                    response = st.session_state.rag_chain.invoke({"question": user_query})
+                    st.write(response)
+                    st.session_state.chat_history.append(AIMessage(content=response))
 
 if __name__ == "__main__":
     main()
