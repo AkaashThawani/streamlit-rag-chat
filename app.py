@@ -54,7 +54,7 @@ def get_rag_chain(vector_store):
     Builds a RAG (Retrieval-Augmented Generation) chain.
     """
     api_key = os.getenv("GOOGLE_API_KEY")
-    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", google_api_key=api_key)
+    llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", google_api_key=api_key)
     retriever = vector_store.as_retriever()
 
     # The prompt template for the RAG chain
@@ -112,7 +112,7 @@ def main():
         uploaded_files = st.file_uploader(
             "Upload PDFs and click 'Process'", accept_multiple_files=True, type="pdf"
         )
-        if st.button("Process Documents"):
+        if st.button("Process Documents",type="primary",use_container_width=True,disabled=not uploaded_files):
             if not uploaded_files:
                 st.warning("Please upload at least one PDF file.")
             else:
@@ -137,7 +137,7 @@ def main():
             st.chat_message("user").write(msg.content)
 
     # Handle user input
-    if user_query := st.chat_input("Ask a question about your documents..."):
+    if user_query := st.chat_input("Ask a question about your documents...",disabled=not st.session_state.processed_files):
         if st.session_state.rag_chain is None:
             st.warning("Please process your documents first.")
         else:

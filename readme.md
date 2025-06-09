@@ -22,7 +22,7 @@ This is an interactive web application that allows you to upload one or more PDF
 
 -   **Frontend:** [Streamlit](https://streamlit.io/)
 -   **Backend:** Python
--   **LLM:** Google Gemini Pro (`gemini-1.5-flash-latest`)
+-   **LLM:** Google Gemini Pro (`gemini-2.0-flash`)
 -   **Framework:** [LangChain](https://www.langchain.com/)
 -   **Vector Store:** [ChromaDB](https://www.trychroma.com/) (in-memory)
 -   **Embeddings:** Google `text-embedding-004`
