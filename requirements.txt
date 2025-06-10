@@ -3,9 +3,8 @@ langchain
 langchain-core
 langchain-google-genai
 langchain-community
-chromadb==0.4.24
 pypdf
 python-dotenv
-pysqlite3-binary
-chromadb==0.4.24
+google-ai-generativelanguage
+faiss-cpu
 numpy==1.26.4
