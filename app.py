@@ -38,7 +38,7 @@ def process_and_store_documents(uploaded_files):
         os.remove(tmpfile_path)
 
     api_key = os.getenv("GOOGLE_API_KEY")
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=api_key) # type: ignore
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=api_key, batch_size=100) # type: ignore
     
     # --- CHANGED VECTOR STORE ---
     vector_store = FAISS.from_documents(documents=all_chunks, embedding=embeddings)
