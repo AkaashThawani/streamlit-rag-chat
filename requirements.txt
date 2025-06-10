@@ -8,3 +8,6 @@ python-dotenv
 google-ai-generativelanguage
 faiss-cpu
 numpy==1.26.4
+altair
+pandas
+streamlit
